@@ -1,13 +1,464 @@
-# History files
-.Rhistory
-.Rapp.history
+library(class)
+library(e1071)
+library(kknn)
+library(lda)
+library(randomForest)
+library(SnowballC)
+library(tm)
+library(topicmodels)
 
-# Example code in package build process
-*-Ex.R
+##Loading the data in R
+reuters<-`reutersCSV[1]` 
+attach(reuters)
 
-# RStudio files
-.Rproj.user/
+###Data Pre-Processing
+##cleaning the corpus
+My.Corpus <- function(corpus) {
+  corpus.tm <- tm_map(corpus, removeNumbers)
+  corpus.tm <- tm_map(corpus.tm, removePunctuation)
+  corpus.tm <- tm_map(corpus.tm, stripWhitespace)
+  corpus.tm <- tm_map(corpus.tm, tolower) 
+  corpus.tm <- tm_map(corpus.tm, removeWords, stopwords("english"))
+  corpus.tm <- tm_map(corpus.tm, stemDocument, language = "english")  
+  return(corpus.tm)
+}
 
-# produced vignettes
-vignettes/*.html
-vignettes/*.pdf
+##Document vector
+# Vector of 21578 documents
+doc <- reuters[, 140]
+doc
+# Creating Corpus
+corpus.1 <- Corpus(VectorSource(doc))
+corpus.1
+# Cleaning Corpus
+corpus.1.clean <- My.Corpus(corpus.1)
+inspect(corpus.1.clean)
+# Creating Term Document Matrix
+tdm <- TermDocumentMatrix(corpus.1.clean)
+tdm
+# Removing Sparse Term
+?removeSparseTerms
+sp.tdm <- removeSparseTerms(tdm, 0.95) # 178 words
+str(sp.tdm)
+
+# taking transpose of Term Document Matrix i.e.rows= n.of document, columns= terms
+st.tdm <- t(data.matrix(sp.tdm))## transpose
+df <- as.data.frame(st.tdm, stringsAsFactors=FALSE)
+df
+# frequency of terms
+freq <- colSums(as.matrix(df))
+length(freq)
+ord <- order(freq)
+freq[head(ord)]#least freq terms
+freq[tail(ord)]#most freq terms
+# Function TF*IDF
+tfidf <- function(mat) {
+  tf <- mat
+  id <- function(col) { sum(!col==0) }
+  idf <- log(nrow(mat)/apply(mat, 2, id))
+  tfidf <- mat
+  for(word in names(idf)){ tfidf[, word] <- tf[, word]*idf[word] }
+  return(tfidf)
+}
+# Creating appropriate weighting using TF*IDF
+df.final <- tfidf(df)
+df.final
+
+##Question 2
+##10 most popular topics
+reuters.mod <- reuters[, c(
+  which(names(reuters)=="topic.earn"),
+  which(names(reuters)=="topic.acq"),
+  which(names(reuters)=="topic.money.fx"),
+  which(names(reuters)=="topic.grain"),
+  which(names(reuters)=="topic.crude"),
+  which(names(reuters)=="topic.trade"),
+  which(names(reuters)=="topic.interest"),
+  which(names(reuters)=="topic.ship"),
+  which(names(reuters)=="topic.wheat"),
+  which(names(reuters)=="topic.corn") )]
+reuters.mod
+# function for relevant topic
+topic <- c()
+for(i in 1:nrow(reuters.mod)) {
+  if(sum(reuters.mod[i,]) == 0) {
+    topic[i] <- NA}
+  if(sum(reuters.mod[i, ]) == 1) {
+    topic[i] <- names(reuters.mod)[which(reuters.mod[i, ]==1)] }
+  if(sum(reuters.mod[i, ]) > 1) {
+    topic[i] <- names(reuters.mod)[sample(which(reuters.mod[i, ]==1), 1)]} #randomly selected
+}
+
+df.count <- cbind(df, topic)
+df.count
+df.mod <- cbind(df.final, topic)
+df.mod
+#Missing values 
+NA.rows <- which(is.na(topic))
+NA.rows
+#data frame with documents, terms, and topic
+df.topic.count <- df.count[-NA.rows, ]
+df.topic.count
+df.topic.mod <- df.mod[-NA.rows, ]
+df.topic.mod
+# Deleting rows with zero
+df.topic.mod <- df.topic.mod[apply(df.topic.mod[, -179], 1, function(x) !all(x==0)),]
+df.topic.count<- df.topic.count[apply(df.topic.count[, -179], 1, function(x) !all(x==0)), ]
+##first feature representation using "bag of words" technique is
+df.topic.mod
+
+# Next feature representation done by topic models. By using LDA.
+k <- 10 
+# Control parameter for convergence of the Variational E-M for the allocation
+control_LDA <- list(estimate.alpha = TRUE, alpha = 50/k, estimate.beta = TRUE,
+                        verbose = 0, prefix = tempfile(), save=0, keep=0,
+                        seed = as.integer(Sys.time()), nstart=1, best=TRUE,
+                        var = list(iter.max=500, tol=10^-6),
+                        em = list(iter.max = 1000, tol = 10^-4),
+                        initialize = "random")
+# Fitting the model 
+mod.lda <- LDA(x = df.topic.count[, -179], k = k, method = "VEM", control = control_LDA)
+mod.lda
+# Each variable represents the probability that this document belongs to its relative topic. It's a sort of Bayesian Mixture over the topics. 
+lda_features <- cbind(as.data.frame(mod.lda@gamma),df.topic.count[, 179])
+colnames(lda_features)[11] <- "topic"
+### Topic model:lda
+lda_features
+
+#combined approach using both bag of words & topic models.
+bow_lda_features <- cbind(df.topic.mod[, -179], lda_features)
+colnames(bow.lda.features)[189] <- "topic"
+## LDA + BAG OF WORDS
+bow_lda_features
+
+### Question 3
+## 10-fold Cross-Validation for Naive Bayes, SVM, and kNN
+# Firstly we shuffle our data
+topic.bow <- df.topic.mod[sample(nrow(df.topic.mod)), ]
+topic.lda <- lda_features[sample(nrow(lda_features)), ]
+topic.bow.lda <- bow_lda_features[sample(nrow(bow_lda_features)), ]
+# Create 10 equally size folds
+folds <- cut(seq(1,nrow(s.topic)), breaks=10, labels=FALSE)
+
+## BAG OF WORDS
+conf.SVM <- 0
+acc.SVM <- c()
+conf.nB <- 0
+acc.nB <- c()
+conf.kNN <- 0
+acc.kNN <- c()
+## Performing Cross Validation for each Classifier
+for(i in 1:10) {
+  
+  # Splitting dataset in training and test set
+  testIndexes <- which(folds==i, arr.ind=TRUE)
+  testData <- topic.bow[testIndexes, ]
+  trainData <- topic.bow[-testIndexes, ]
+  trainTopic <- topic.bow$topic[-testIndexes]
+  
+  # Performing classification naive Bayes
+  reuters.nB <- naiveBayes(topic ~ ., data=trainData)
+  pred.nB <- predict(reuters.nB, testData[, -179])
+  tab.nB <- table(testData$topic, pred.nB)
+  conf.nB <- conf.nB + tab.nB
+  acc.nB[i] <- sum(diag(tab.nB))/nrow(testData)
+  
+  # Performing classification SVM
+  reuters.SVM <- svm(topic ~ ., data = trainData)
+  pred.SVM <- predict(reuters.SVM, testData[, -179])
+  tab.SVM <- table(testData$topic, pred.SVM)
+  conf.SVM <- conf.SVM + tab.SVM
+  acc.SVM[i] <- sum(diag(tab.SVM))/nrow(testData)
+  
+  # Performing Classification kNN
+  pred.reuters.kNN <- knn(trainData[, -179], testData[, -179], trainTopic, 10)
+  tab.kNN <- table(testData$topic, pred.reuters.kNN )
+  conf.kNN <- conf.kNN + tab.kNN
+  acc.kNN[i] <- sum(diag(tab.kNN))/nrow(testData)
+  
+}
+# Confusion Matrix summed over 10 fold cross validation 
+conf.nB # Naive Bayes
+conf.SVM # SVM
+conf.kNN # kNN
+# Accuracy of each fold 
+acc.nB # Naive Bayes
+acc.SVM # SVM
+acc.kNN # kNN
+# Means and Standard Deviations
+mean(acc.nB); sd(acc.nB) # naive Bayes
+mean(acc.SVM); sd(acc.SVM) # SVM
+mean(acc.kNN); sd(acc.kNN) # kNN
+
+
+# LDA
+lda.conf.SVM <- 0
+lda.acc.SVM <- c()
+lda.conf.nB <- 0
+lda.acc.nB <- c()
+lda.conf.kNN <- 0
+lda.acc.kNN <- c()
+
+for(i in 1:10) {
+  # Splitting dataset in training and test set
+  testIndexes <- which(folds==i, arr.ind=TRUE)
+  testData <- lda_features[testIndexes, ]
+  trainData <- lda_features[-testIndexes, ]
+  trainTopic <- lda_features$topic[-testIndexes]
+  
+  # Performing classification naive Bayes
+  reuters.nB <- naiveBayes(topic ~ ., data=trainData)
+  pred.nB <- predict(reuters.nB, testData[, -11])
+  tab.nB <- table(testData$topic, pred.nB)
+  lda.conf.nB <- lda.conf.nB + tab.nB
+  lda.acc.nB[i] <- sum(diag(tab.nB))/nrow(testData)
+  
+  # Performing classification SVM
+  reuters.SVM <- svm(topic ~ ., data = trainData)
+  pred.SVM <- predict(reuters.SVM, testData[, -11])
+  tab.SVM <- table(testData$topic, pred.SVM)
+  lda.conf.SVM <- lda.conf.SVM + tab.SVM
+  lda.acc.SVM[i] <- sum(diag(tab.SVM))/nrow(testData)
+  
+  # Performing Classification kNN
+  pred.reuters.kNN <- knn(trainData[, -11], testData[, -11], trainTopic, 10)
+  tab.kNN <- table(testData$topic, pred.reuters.kNN )
+  lda.conf.kNN <- lda.conf.kNN + tab.kNN
+  lda.acc.kNN[i] <- sum(diag(tab.kNN))/nrow(testData)
+  
+}
+
+# Confusion Matrix summed over 10 fold cross validation 
+lda.conf.nB # Naive Bayes
+lda.conf.SVM # SVM
+lda.conf.kNN # kNN
+# Accuracy of each fold 
+lda.acc.nB # Naive Bayes
+lda.acc.SVM # SVM
+lda.acc.kNN # kNN
+# Means and Standard Deviations
+mean(lda.acc.nB); sd(lda.acc.nB) # naive Bayes
+mean(lda.acc.SVM); sd(lda.acc.SVM) # SVM
+mean(lda.acc.kNN); sd(lda.acc.kNN) # kNN
+
+# Bag of Words + LDA
+bow.lda.conf.SVM <- 0
+bow.lda.acc.SVM <- c()
+bow.lda.conf.nB <- 0
+bow.lda.acc.nB <- c()
+bow.lda.conf.kNN <- 0
+bow.lda.acc.kNN <- c()
+
+for(i in 1:10) {
+  
+  
+  # Splitting dataset in training and test set
+  testIndexes <- which(folds==i, arr.ind=TRUE)
+  testData <- bow_lda_features[testIndexes, ]
+  trainData <- bow_lda_features[-testIndexes, ]
+  trainTopic <- bow_lda_features$topic[-testIndexes]
+  
+  # Performing classification naive Bayes
+  reuters.nB <- naiveBayes(topic ~ ., data=trainData)
+  pred.nB <- predict(reuters.nB, testData[, -189])
+  tab.nB <- table(testData$topic, pred.nB)
+  bow.lda.conf.nB <- bow.lda.conf.nB + tab.nB
+  bow.lda.acc.nB[i] <- sum(diag(tab.nB))/nrow(testData)
+  
+  # Performing classification SVM
+  reuters.SVM <- svm(topic ~ ., data = trainData)
+  pred.SVM <- predict(reuters.SVM, testData[, -189])
+  tab.SVM <- table(testData$topic, pred.SVM)
+  bow.lda.conf.SVM <- bow.lda.conf.SVM + tab.SVM
+  bow.lda.acc.SVM[i] <- sum(diag(tab.SVM))/nrow(testData)
+  
+  # Performing Classification kNN
+  pred.reuters.kNN <- knn(trainData[, -189], testData[, -189], trainTopic, 10)
+  tab.kNN <- table(testData$topic, pred.reuters.kNN )
+  bow.lda.conf.kNN <- bow.lda.conf.kNN + tab.kNN
+  bow.lda.acc.kNN[i] <- sum(diag(tab.kNN))/nrow(testData)
+  
+}
+# Confusion Matrix summed over 10 fold cross validation 
+bow.lda.conf.nB # Naive Bayes
+bow.lda.conf.SVM # SVM
+bow.lda.conf.kNN # kNN
+
+# Accuracy of each fold 
+bow.lda.acc.nB # Naive Bayes
+bow.lda.acc.SVM # SVM
+bow.lda.acc.kNN # kNN
+
+# Means and Standard Deviations
+mean(bow.lda.acc.nB); sd(bow.lda.acc10F.nB) # naive Bayes
+mean(bow.lda.acc.SVM); sd(bow.lda.acc10F.SVM) # SVM
+mean(bow.lda.acc.kNN); sd(bow.lda.acc10F.kNN) # kNN
+
+##Evaluating Performance Measures
+
+performance <- function(tab) {
+  Recall <- c()
+  Precision <- c()
+  #Recall
+  for(i in 1: nrow(tab)) {
+    Recall[i] <- tab[i,i]/(sum(tab[i, ]))
+  }
+  #Precision
+  for(i in 1: nrow(tab)) {
+    Precision[i] <- tab[i,i]/(sum(tab[, i]))
+  }
+  for( i in 1:nrow(tab)) {
+    if(is.na(Recall[i])) {Recall[i] <- 0}
+    else if (is.na(Precision[i])) {Precision[i] <- 0}
+  }
+  # F-Measure
+  F <- (2*Precision*Recall)/(Precision + Recall)
+  # Accuracy
+  Accuracy <- sum(diag(tab))/nrow(s.df.topic)
+  # Macro Average Recall
+  M.Recall <- sum(Recall)/nrow(tab)
+  # Macro Average Precision
+  M.Precision <- sum(Precision)/nrow(tab)
+  # micro Average Recall
+  num <- sum(diag(tab))
+  den.r <- 0
+  for(i in 1:nrow(tab)) {
+    temp.r <- sum(tab[i,])
+    den.r <- den.r + temp.r
+  }
+  m.Recall <- num/den.r
+  # micro Average Precision
+  den.p <- 0
+  for(i in 1:nrow(tab)){
+    temp.p <- sum(tab[, i])
+    den.p <- den.p + temp.p
+  }
+  m.Precision <- num/den.p
+  # Rounding & Processing
+  Recall <- round(Recall, digits=5) 
+  Precision <- round(Precision, digits=5)
+  F <- round(F, digits=5)
+  type <- row.names(tab)
+  type <- as.data.frame(type)
+  
+  return(list(ClassMeasures = cbind(type, Recall, Precision, F),
+              Accuracy = Accuracy,
+              M.Recall = M.Recall,
+              M.Precision = M.Precision,
+              m.Recall = m.Recall,
+              m.Precision =  m.Precision))
+  
+}
+
+
+
+# Condifence Interval for Accuracy of SVM
+
+SVM.acc <- performance(conf.SVM)$Accuracy; SVM.acc
+conf.int <- c( SVM.acc - 1.96* sqrt( (SVM.acc*(1-SVM.acc)) / nrow(s.df.topic) ),
+               SVM.acc + 1.96* sqrt( (SVM.acc*(1-SVM.acc)) / nrow(s.df.topic) ) ); conf.int
+lda.SVM.acc <- performance(lda.conf.SVM)$Accuracy; lda.SVM.acc
+conf.int1 <- c( lda.SVM.acc - 1.96* sqrt( (lda.SVM.acc*(1-lda.SVM.acc)) / nrow(s.df.topic) ),
+               lda.SVM.acc + 1.96* sqrt( (lda.SVM.acc*(1-lda.SVM.acc)) / nrow(s.df.topic) ) ); conf.int1
+bow.lda.SVM.acc <- performance(conf.SVM)$Accuracy; SVM.acc
+conf.int2 <- c( SVM.acc - 1.96* sqrt( (bow.lda.SVM.acc*(1-bow.lda.SVM.acc)) / nrow(s.df.topic) ),
+               SVM.acc + 1.96* sqrt( (bow.lda.SVM.acc*(1-bow.lda.SVM.acc)) / nrow(s.df.topic) ) ); conf.int2
+### PERFORMANCE MEASURES ###
+#### BAG-OF WORDS
+# Performance measures for SVM
+performance(conf.SVM)
+# Performance measures for naiveBayes
+performance(conf.nB)
+# Performance measures for kNN
+performance(conf.kNN)
+#### LDA
+# Performance measures for SVM
+performance(lda.conf.SVM)
+# Performance measures for naiveBayes
+performance(lda.conf.nB)
+# Performance measures for kNN
+performance(lda.conf.kNN)
+#### BAG OF WORDS + LDA
+# Performance measures for SVM
+performance(bow.lda.conf.SVM)
+# Performance measures for naiveBayes
+performance(bow.lda.conf.nB)
+# Performance measures for kNN
+performance(bow.lda.conf.kNN)
+
+###Question 4
+##possibile topics these documents belong to. 
+reuters.a <- reuters[, - c(1, 2, 3, 139, 140)]
+col.1 <- c()
+for( i in 1:ncol(reuters.a)) {
+  if(sum(reuters.a[, i]) == 0 ) {col.1 <- c(col.1, i)}
+}
+reuters.a <- reuters.a[, -col.1]
+ncol(reuters.a)# 118 topics
+## Preparing for Clustering 
+df.clust <- df[apply(df, 1, function(x) !all(x==0)),  ]
+#normalising function(euclidean)
+norm_euc <- function(m) m/apply(m, MARGIN=1, FUN=function(x) sum(x^2)^.5)
+df.clust.norm<- norm_euc(df.clust)
+#evaluating dissimilary matrix
+diss<-dist(df.clust.norm)
+
+##hierarchical clustering
+hc.clust<-hclust(diss,method="ward")
+#dendogram
+plot(hc.clust,xlab=NA,sub=NA)
+rect.hclust(hc.clust,k=10,border="red")
+
+##k means
+mod.km<-kmeans(df.clust.norm,centers= 118)
+##plot clusters on Principal components
+plot(prcomp(df.clust.norm)$x,col=mod.km$cl,main="kmeans")
+
+##PAM
+mod.PAM<=pam(dissimilarity,k=10,diss=T)
+#plotting clusters on Principl Components
+plot(prcomp(df.clust.norm)$x,col=mod.PAM$cluster,main="PAM")
+
+##
+
+
+
+
+## do tfxidf
+dtm_tfxidf <- weightTfIdf(reuters)
+inspect(dtm_tfxidf[1:10, 5001:5010])
+
+## do document clustering
+
+### k-means (this uses euclidean distance)
+m <- as.matrix(df.final)
+rownames(m) <- 1:nrow(m)
+
+### don't forget to normalize the vectors so Euclidean makes sense
+norm_eucl <- function(m) m/apply(m, MARGIN=1, FUN=function(x) sum(x^2)^.5)
+m_norm <- norm_eucl(m)
+na.omit(m_norm)
+scale(m_norm)
+### cluster into 10 clusters
+cl <- kmeans(m_norm, 10)
+cl
+
+table(cl$cluster)
+
+### show clusters using the first 2 principal components
+plot(prcomp(m_norm)$x, col=cl$cl)
+
+findFreqTerms(dtm[cl$cluster==1], 50)
+inspect(reuters[which(cl$cluster==1)])
+
+## hierarchical clustering
+library(proxy)
+
+### this is going to take 4-ever (O(n^2))
+d <- dist(m, method="cosine")
+hc <- hclust(d, method="average")
+plot(hc)
+
+cl <- cutree(hc, 50)
+table(cl)
+findFreqTerms(dtm[cl==1], 50)
